@@ -1,4 +1,4 @@
-package core
+package dos
 
 import (
 	"errors"
@@ -13,12 +13,11 @@ func addr(seg, offset uint64) uint64 {
 }
 
 func GetStringDollarSign(mu uc.Unicorn, seg, offset uint64) (string, error) {
-	count := 0
+	var count uint64 = 0
 	var buff strings.Builder
 	for {
 		// dx is offset
-		b, err := mu.MemRead(addr(seg, offset), 1)
-		offset++
+		b, err := mu.MemRead(addr(seg, offset+count), 1)
 		if err != nil {
 			return "", err
 		}

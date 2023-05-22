@@ -3,6 +3,8 @@ package core
 import (
 	"fmt"
 
+	"door86.org/ivdoor/cpu"
+	"door86.org/ivdoor/dos"
 	uc "github.com/unicorn-engine/unicorn/bindings/go/unicorn"
 	"golang.org/x/arch/x86/x86asm"
 )
@@ -118,6 +120,23 @@ func (intr Emulator) Handle(mu uc.Unicorn, intrNum uint32) error {
 
 func (em Emulator) Write(offset uint64, data []byte) error {
 	return em.mu.MemWrite(IVDOOR_MEMORY_MAIN_START+offset, data)
+}
+
+func (em Emulator) StartSegment() cpu.Seg {
+	return IVDOOR_MEMORY_MAIN_START / 16
+}
+
+func (em Emulator) WriteBinary(seg uint16, data []byte) error {
+	start := cpu.Seg(IVDOOR_MEMORY_MAIN_START/16 + seg)
+	size := len(data)
+	if size < 0x10000 {
+		size = 0x10000
+	}
+	len := size >> 4
+	end := cpu.Seg(uint16(start) + uint16(len))
+	psp := dos.CreatePsp(start, end, end+1)
+	em.mu.MemWrite(uint64(IVDOOR_MEMORY_MAIN_START+seg), psp)
+	return em.mu.MemWrite(uint64(IVDOOR_MEMORY_MAIN_START+seg+0x100), data)
 }
 
 func (em Emulator) Start() error {
