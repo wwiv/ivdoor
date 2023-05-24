@@ -97,7 +97,10 @@ func NewEmulator(mu uc.Unicorn) (*Emulator, error) {
 	e := Emulator{mu: mu, intrs: make(map[uint32]InterruptHandler), Verbose: 0}
 	addDefaultHooks(mu)
 	mu.HookAdd(uc.HOOK_INTR, func(mu uc.Unicorn, intno uint32) {
-		e.Handle(mu, intno)
+		ah, _ := mu.RegRead(uc.X86_REG_AH)
+		if err := e.Handle(mu, intno); err != nil {
+			fmt.Printf("Error executing Hook: 0x%x/%x: '%s'\n", intno, ah, err)
+		}
 	}, 1, 0)
 	if err := allocEmulatorMemory(e, mu); err != nil {
 		return nil, err

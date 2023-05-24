@@ -11,7 +11,7 @@
             "request": "launch",
             "mode": "auto",
             "program": "${workspaceFolder}/main.go",
-            "args": ["run", "asm/hello.com"]
+            "args": ["run", "/Users/r/dos/pk/PKUNZJR.COM"]
         }
 
     ]
