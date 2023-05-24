@@ -5,6 +5,7 @@ import (
 
 	"door86.org/ivdoor/cpu"
 	"door86.org/ivdoor/dos"
+	"github.com/golang/glog"
 	uc "github.com/unicorn-engine/unicorn/bindings/go/unicorn"
 	"golang.org/x/arch/x86/x86asm"
 )
@@ -39,7 +40,7 @@ type Emulator struct {
 func addDefaultHooks(mu uc.Unicorn) error {
 
 	// mu.HookAdd(uc.HOOK_BLOCK, func(mu uc.Unicorn, addr uint64, size uint32) {
-	// 	fmt.Printf("Block: 0x%x, 0x%x\n", addr, size)
+	// 	glog.V(1).Infof("Block: 0x%x, 0x%x\n", addr, size)
 	// }, 1, 0)
 
 	mu.HookAdd(uc.HOOK_CODE, func(mu uc.Unicorn, addr uint64, size uint32) {
@@ -53,7 +54,7 @@ func addDefaultHooks(mu uc.Unicorn) error {
 			fmt.Println(err)
 			return
 		}
-		fmt.Printf("Code: 0x%x, 0x%x; Instruction: '%s'\n", addr, size, inst)
+		glog.V(1).Infof("1/ Code: 0x%x, 0x%x; Instruction: '%s'\n", addr, size, inst)
 
 	}, 1, 0)
 
@@ -62,7 +63,7 @@ func addDefaultHooks(mu uc.Unicorn) error {
 		if access == uc.MEM_WRITE {
 			atype = "write"
 		}
-		fmt.Printf(": Mem %s @0x%x, 0x%x = 0x%x\n", atype, addr, size, value)
+		glog.V(1).Infof(": Mem %s @0x%x, 0x%x = 0x%x\n", atype, addr, size, value)
 	}, 1, 0)
 
 	invalid := uc.HOOK_MEM_READ_INVALID | uc.HOOK_MEM_WRITE_INVALID | uc.HOOK_MEM_FETCH_INVALID
@@ -76,7 +77,7 @@ func addDefaultHooks(mu uc.Unicorn) error {
 		case uc.MEM_FETCH_UNMAPPED | uc.MEM_FETCH_PROT:
 			atype = "invalid fetch"
 		}
-		fmt.Printf("%s: @0x%x, 0x%x = 0x%x\n", atype, addr, size, value)
+		glog.V(1).Infof("%s: @0x%x, 0x%x = 0x%x\n", atype, addr, size, value)
 		return false
 	}, 1, 0)
 
@@ -99,7 +100,7 @@ func NewEmulator(mu uc.Unicorn) (*Emulator, error) {
 	mu.HookAdd(uc.HOOK_INTR, func(mu uc.Unicorn, intno uint32) {
 		ah, _ := mu.RegRead(uc.X86_REG_AH)
 		if err := e.Handle(mu, intno); err != nil {
-			fmt.Printf("Error executing Hook: 0x%x/%x: '%s'\n", intno, ah, err)
+			glog.Warningf("Error executing Hook: 0x%x/%x: '%s'\n", intno, ah, err)
 		}
 	}, 1, 0)
 	if err := allocEmulatorMemory(e, mu); err != nil {
@@ -127,6 +128,10 @@ func (em Emulator) Write(offset uint64, data []byte) error {
 
 func (em Emulator) StartSegment() cpu.Seg {
 	return IVDOOR_MEMORY_MAIN_START / 16
+}
+
+func (em Emulator) EndSegment() cpu.Seg {
+	return (IVDOOR_MEMORY_MAIN_START + IVDOOR_MEMORY_MAIN_SIZE) / 16
 }
 
 func (em Emulator) WriteBinary(seg uint16, data []byte) error {

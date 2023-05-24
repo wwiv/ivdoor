@@ -36,7 +36,7 @@ func run(b []byte) error {
 		return err
 	}
 	emu.Verbose = 4
-	d := dos.NewDos(mu)
+	d := dos.NewDos(mu, emu.StartSegment(), emu.EndSegment())
 
 	// attach interrupts 0x20 and 0x21
 	emu.Register(0x20, d.Int20)

@@ -27,14 +27,16 @@ type Dos struct {
 
 	// DOS file handles
 	files map[int]*DosFile
+	Mem   *DosMem
 }
 
-func NewDos(mu uc.Unicorn) *Dos {
+func NewDos(mu uc.Unicorn, start, end cpu.Seg) *Dos {
 	d := &Dos{
 		mu:    mu,
 		in:    bufio.NewReader(os.Stdin),
 		out:   bufio.NewWriter(os.Stdout),
 		files: make(map[int]*DosFile),
+		Mem:   NewDosMem(int(start), int(end)),
 	}
 	d.files[0] = &DosFile{Name: "", Dir: "", File: os.Stdin}
 	d.files[1] = &DosFile{Name: "", Dir: "", File: os.Stdout}
@@ -68,7 +70,7 @@ func ToSegOff(laddr uint32) (seg cpu.Seg, off uint16) {
 	return
 }
 
-func ToLinearAddr(seg cpu.Seg, off uint16) uint64 {
+func addr(seg cpu.Seg, off uint16) uint64 {
 	return uint64(seg<<4) | uint64(off)
 }
 
@@ -93,7 +95,7 @@ func LoadCom(mu uc.Unicorn, seg_start cpu.Seg, data []byte) error {
 }
 
 func (dos Dos) Int20(mu uc.Unicorn, intrNum uint32) error {
-	fmt.Println("Int20: Stop")
+	glog.V(1).Infoln("Int20: Stop")
 	mu.Stop()
 	return nil
 }
@@ -103,7 +105,7 @@ func getStringDollarSign(mu uc.Unicorn, seg cpu.Seg, offset uint16) (string, err
 	var buff strings.Builder
 	for {
 		// dx is offset
-		b, err := mu.MemRead(ToLinearAddr(seg, offset+count), 1)
+		b, err := mu.MemRead(addr(seg, offset+count), 1)
 		if err != nil {
 			return "", err
 		}
@@ -128,7 +130,7 @@ func GetString(mu uc.Unicorn, seg cpu.Seg, offset uint16) (string, error) {
 	var buff strings.Builder
 	for {
 		// dx is offset
-		b, err := mu.MemRead(ToLinearAddr(seg, offset+count), 1)
+		b, err := mu.MemRead(addr(seg, offset+count), 1)
 		if err != nil {
 			return "", err
 		}
@@ -202,7 +204,7 @@ func (d *Dos) Int21(mu uc.Unicorn, intrNum uint32) error {
 	switch ah {
 
 	case 0x00: // terminate process
-		fmt.Println("Int21: 0x0 Stop")
+		glog.Infoln("Int21: 0x0 Stop")
 		mu.Stop()
 
 	case 0x01: // Keyboard Input with Echo
@@ -215,18 +217,18 @@ func (d *Dos) Int21(mu uc.Unicorn, intrNum uint32) error {
 		d.out.WriteByte(byte(dx & 0xff))
 	case 0x09: // Print $ terminated string.
 		if s, err := getStringDollarSign(mu, ds, dx); err == nil {
-			fmt.Print(s)
+			glog.V(1).Infof("getStringDollarSign: '%s'\n", s)
 		}
 	case 0x0a: // Buffered Keyboard Input
 		reader := bufio.NewReader(d.in)
-		bmax, _ := mu.MemRead(ToLinearAddr(ds, dx), 1)
+		bmax, _ := mu.MemRead(addr(ds, dx), 1)
 		max := int(bmax[0])
 		message, _ := reader.ReadString('\n')
 		if len(message) >= max {
 			message = message[:max-1]
 		}
-		mu.MemWrite(ToLinearAddr(ds, dx), []byte{bmax[0], byte(len(message))})
-		mu.MemWrite(ToLinearAddr(ds, dx)+2, []byte(message))
+		mu.MemWrite(addr(ds, dx), []byte{bmax[0], byte(len(message))})
+		mu.MemWrite(addr(ds, dx)+2, []byte(message))
 	case 0x30: // Get DOS Version Number
 		mu.RegWrite(uc.X86_REG_AX, 0x07)
 
@@ -300,7 +302,7 @@ func (d *Dos) Int21(mu uc.Unicorn, intrNum uint32) error {
 		if err != nil {
 			return d.SetDosError(0x1E, "Read fault")
 		}
-		mu.MemWrite(ToLinearAddr(ds, dx), bytes)
+		mu.MemWrite(addr(ds, dx), bytes)
 		return d.ClearDosError(uint64(numRead))
 
 	case 0x40: // Write To File or Device Using Handle
@@ -317,7 +319,7 @@ func (d *Dos) Int21(mu uc.Unicorn, intrNum uint32) error {
 			}
 			return file.File.Truncate(pos)
 		}
-		mem, err := mu.MemRead(ToLinearAddr(ds, dx), uint64(cx))
+		mem, err := mu.MemRead(addr(ds, dx), uint64(cx))
 		if err != nil {
 			return d.SetDosError(0x1f, "General failure")
 		}
@@ -364,11 +366,11 @@ func (d *Dos) Int21(mu uc.Unicorn, intrNum uint32) error {
 		return d.ClearDosError(uint64(pos))
 
 	case 0x4c: // Terminate process with return code
-		fmt.Println("Int21: 0x0 Stop")
+		glog.V(1).Infoln("Int21: 0x0 Stop")
 		mu.Stop()
 
 	default:
-		fmt.Printf("Int21: Unhandled instrction: 0x%x; AH=0x%x\n", intrNum, ah)
+		glog.Errorf("Int21: Unhandled instrction: 0x%x; AH=0x%x\n", intrNum, ah)
 	}
 
 	return nil
