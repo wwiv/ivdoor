@@ -45,7 +45,7 @@ func NewDos(mu uc.Unicorn, start, end cpu.Seg) *Dos {
 	return d
 }
 
-func CreatePsp(start_seg, end_seg, env_seg cpu.Seg) []byte {
+func CreatePsp(start_seg, end_seg, env_seg cpu.Seg, args []string) []byte {
 	psp := make([]byte, 0x100)
 	psp[0] = 0xcd
 	psp[1] = 0x20
@@ -60,6 +60,25 @@ func CreatePsp(start_seg, end_seg, env_seg cpu.Seg) []byte {
 	binary.LittleEndian.PutUint16(psp[22:], 0xFFFE)
 	binary.LittleEndian.PutUint16(psp[44:], uint16(env_seg))
 	// TODO: Create rest
+
+	// Fill in command line
+	c := 0
+	for _, arg := range args {
+		psp[81+c] = ' '
+		c++
+		bs := []byte(string(arg))
+		for _, ch := range bs {
+			if c >= 0x7E {
+				break
+			}
+			psp[81+c] = ch
+			c++
+		}
+	}
+	// Add trailing 0Dh
+	psp[c] = 0x0d
+	c++
+	psp[80] = uint8(c & 0xff)
 
 	return psp
 }
@@ -149,7 +168,7 @@ func (dos *Dos) LoadExe(exe *Executable, seg_base *DosMemBlock, psp []byte) (seg
 	return seg_start, nil
 }
 
-func (dos *Dos) Load(exe *Executable) (seg uint16, err error) {
+func (dos *Dos) Load(exe *Executable, args []string) (seg uint16, err error) {
 	if !exe.Exists || len(exe.Data) == 0 {
 		return 0, errors.New("executable not read")
 	}
@@ -175,7 +194,7 @@ func (dos *Dos) Load(exe *Executable) (seg uint16, err error) {
 	seg_base.Owner = seg_base.Start
 	// TODO: Create PSP
 
-	psp := CreatePsp(cpu.Seg(seg_base.Start), cpu.Seg(seg_base.End+1), cpu.Seg(env_seg.Start))
+	psp := CreatePsp(cpu.Seg(seg_base.Start), cpu.Seg(seg_base.End+1), cpu.Seg(env_seg.Start), args)
 	switch exe.Etype {
 	case EXE:
 		return dos.LoadExe(exe, seg_base, psp)

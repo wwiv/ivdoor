@@ -22,7 +22,7 @@
             "request": "launch",
             "mode": "auto",
             "program": "${workspaceFolder}/main.go",
-            "args": ["-v", "1", "-logtostderr", "run", "/Users/r/dos/src/TEST/TEST.EXE"]
+            "args": ["-v", "1", "-logtostderr", "run", "/Users/r/dos/src/TEST/TEST.EXE", "foo", "bar", "baz"]
             //"args": ["run", "/Users/r/dos/pk/PKUNZJR.COM"]
             //"args": ["run", "/Users/r/git-iv/ivdoor/asm/hello.com"]
         }

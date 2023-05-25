@@ -151,7 +151,7 @@ func (em Emulator) WriteBinary(seg uint16, data []byte) error {
 	}
 	len := size >> 4
 	end := cpu.Seg(uint16(start) + uint16(len))
-	psp := dos.CreatePsp(start, end, end+1)
+	psp := dos.CreatePsp(start, end, end+1, []string{})
 	em.mu.MemWrite(uint64(IVDOOR_MEMORY_MAIN_START+seg), psp)
 	return em.mu.MemWrite(uint64(IVDOOR_MEMORY_MAIN_START+seg+0x100), data)
 }

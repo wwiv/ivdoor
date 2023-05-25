@@ -23,7 +23,7 @@ var (
 	cmdInst = flag.NewFlagSet("inst", flag.ExitOnError)
 )
 
-func run(exe *dos.Executable) error {
+func run(exe *dos.Executable, args []string) error {
 	// set up unicorn instance and add hooks
 	mu, err := uc.NewUnicorn(uc.ARCH_X86, uc.MODE_16)
 	if err != nil {
@@ -42,7 +42,7 @@ func run(exe *dos.Executable) error {
 	emu.Register(0x20, d.Int20)
 	emu.Register(0x21, d.Int21)
 
-	if _, err := d.Load(exe); err != nil {
+	if _, err := d.Load(exe, args); err != nil {
 		return err
 	}
 
@@ -110,7 +110,7 @@ func main() {
 			fmt.Println(err)
 			return
 		}
-		err = run(exe)
+		err = run(exe, cmdRun.Args()[1:])
 		if err != nil {
 			fmt.Println(err)
 			return
@@ -134,7 +134,7 @@ func main() {
 			Hdr:    dos.ExeHeader{},
 			Data:   b,
 		}
-		err = run(exe)
+		err = run(exe, []string{})
 		if err != nil {
 			fmt.Println(err)
 			return
