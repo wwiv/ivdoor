@@ -70,28 +70,122 @@ func ToSegOff(laddr uint32) (seg cpu.Seg, off uint16) {
 	return
 }
 
-func addr(seg cpu.Seg, off uint16) uint64 {
-	return uint64(seg<<4) | uint64(off)
-}
-
-func LoadCom(mu uc.Unicorn, seg_start cpu.Seg, data []byte) error {
+func (dos *Dos) LoadCom(exe *Executable, seg_base *DosMemBlock, psp []byte) (uint16, error) {
 	// default regs
-	mu.RegWrite(uc.X86_REG_CS, uint64(seg_start))
-	mu.RegWrite(uc.X86_REG_DS, uint64(seg_start))
-	mu.RegWrite(uc.X86_REG_ES, uint64(seg_start))
-	mu.RegWrite(uc.X86_REG_SS, uint64(seg_start))
+	dos.mu.RegWrite(uc.X86_REG_CS, uint64(seg_base.Start))
+	dos.mu.RegWrite(uc.X86_REG_DS, uint64(seg_base.Start))
+	dos.mu.RegWrite(uc.X86_REG_ES, uint64(seg_base.Start))
+	dos.mu.RegWrite(uc.X86_REG_SS, uint64(seg_base.Start))
 
 	// default stack
-	mu.RegWrite(uc.X86_REG_SP, 0xFFFE)
+	dos.mu.RegWrite(uc.X86_REG_SP, 0xFFFE)
 	// set IP past PSP
-	mu.RegWrite(uc.ARM_REG_IP, 0x0100)
+	dos.mu.RegWrite(uc.X86_REG_IP, 0x0100)
 
 	// copy PSP + binary data into memory
-	psp := CreatePsp(seg_start, seg_start+0x1000, seg_start+0x1000+1)
-	mu.MemWrite(uint64(seg_start)*0x10, psp)
-	mu.MemWrite((uint64(seg_start)*0x10)+0x100, data)
+	dos.mu.MemWrite(cpu.Addr(cpu.Seg(seg_base.Start), 0), psp)
+	dos.mu.MemWrite(cpu.Addr(cpu.Seg(seg_base.Start), 0x0100), exe.Data)
 
-	return nil
+	return uint16(seg_base.Start), nil
+}
+
+func (dos *Dos) LoadImage(exe *Executable, seg_base *DosMemBlock) (seg uint16, err error) {
+	// DS is what we allocated, for EXE, CS is 0x100 past it since the PSP goes first
+	dos.mu.RegWrite(uc.X86_REG_CS, uint64(seg_base.Start))
+	dos.mu.RegWrite(uc.X86_REG_DS, uint64(seg_base.Start))
+	dos.mu.RegWrite(uc.X86_REG_ES, uint64(seg_base.Start))
+	dos.mu.RegWrite(uc.X86_REG_SS, uint64(seg_base.Start))
+	// default SP
+	dos.mu.RegWrite(uc.X86_REG_SP, 0xFFFE)
+	dos.mu.RegWrite(uc.X86_REG_IP, 0)
+
+	// Copy data into memory at CS from the binary read from disk.
+	dos.mu.MemWrite((uint64(seg_base.Start) * 0x10), exe.Data)
+
+	return uint16(seg_base.Start), nil
+}
+
+func (dos *Dos) LoadExe(exe *Executable, seg_base *DosMemBlock, psp []byte) (seg uint16, err error) {
+	// DS is what we allocated, for EXE, CS is 0x100 past it since the PSP goes first
+	seg_start := uint16(seg_base.Start)
+	img_start := seg_start + 0x0010
+	ds := seg_start
+	es := seg_start
+	cs := (img_start + exe.Hdr.CS) & 0xFFFF
+	ss := (img_start + exe.Hdr.SS) & 0xFFFF
+	dos.mu.RegWrite(uc.X86_REG_CS, uint64(cs))
+	dos.mu.RegWrite(uc.X86_REG_DS, uint64(ds))
+	dos.mu.RegWrite(uc.X86_REG_ES, uint64(es))
+	dos.mu.RegWrite(uc.X86_REG_SS, uint64(ss))
+
+	dos.mu.RegWrite(uc.X86_REG_SP, uint64(exe.Hdr.SP))
+	dos.mu.RegWrite(uc.X86_REG_BP, 0)
+	dos.mu.RegWrite(uc.X86_REG_IP, uint64(exe.Hdr.IP))
+
+	// Copy data into memory at CS from the binary read from disk.
+	// TODO - need to copy PSP?
+	dos.mu.MemWrite(cpu.Addr(cpu.Seg(ds), 0), psp)
+	dos.mu.MemWrite(cpu.Addr(cpu.Seg(cs), 0), exe.Data)
+
+	glog.V(1).Infof("EXE Values:\nCS: 0x%04X\nDS: 0x%04X\nES: 0x%04X\nSS: 0x%04X\nIP: 0x%04X\n\n",
+		cs, ds, es, ss, exe.Hdr.IP)
+	glog.V(1).Infof("SP: 0x%04X\n", exe.Hdr.SP)
+
+	// Fixup relos
+	for _, r := range exe.Hdr.Relos {
+		laddr := cpu.Addr(cpu.Seg(img_start+r.Segment), r.Offset)
+		m, err := cpu.Mem16(dos.mu, laddr)
+		if err != nil {
+			glog.Warningf("error reading memory: '%s'\n", err)
+			continue
+		}
+		if err := cpu.PutMem16(dos.mu, laddr, m+img_start); err != nil {
+			glog.Warningf("Error writing Relo: [0x%04X:0x%04X] += 0x%04X", r.Segment, r.Offset, img_start)
+			continue
+		}
+		glog.V(3).Infof("Relo: [0x%04X:0x%04X] += 0x%04X", r.Segment, r.Offset, img_start)
+	}
+
+	return seg_start, nil
+}
+
+func (dos *Dos) Load(exe *Executable) (seg uint16, err error) {
+	if !exe.Exists || len(exe.Data) == 0 {
+		return 0, errors.New("executable not read")
+	}
+	// hack really look up environment
+	env_seg, err := dos.Mem.Allocate(10)
+	if err != nil {
+		return 0, err
+	}
+	env_laddr := cpu.Addr(cpu.Seg(env_seg.Start), 0)
+	env := []byte("PATH=Z:\\\n")
+	if err := dos.mu.MemWrite(env_laddr, env); err != nil {
+		return 0, err
+	}
+
+	sn := exe.SegmentsNeeded()
+	seg_base, err := dos.Mem.Allocate(sn)
+	glog.V(2).Infof("DOS Allocated [%d segments %d bytes]", sn, sn*0x10)
+	if err != nil {
+		return 0, err
+	}
+	// We own our own memory block.
+
+	seg_base.Owner = seg_base.Start
+	// TODO: Create PSP
+
+	psp := CreatePsp(cpu.Seg(seg_base.Start), cpu.Seg(seg_base.End+1), cpu.Seg(env_seg.Start))
+	switch exe.Etype {
+	case EXE:
+		return dos.LoadExe(exe, seg_base, psp)
+	case COM:
+		return dos.LoadCom(exe, seg_base, psp)
+	case IMAGE:
+		return dos.LoadImage(exe, seg_base)
+	default:
+		panic("Unhandled Etype")
+	}
 }
 
 func (dos Dos) Int20(mu uc.Unicorn, intrNum uint32) error {
@@ -105,7 +199,7 @@ func getStringDollarSign(mu uc.Unicorn, seg cpu.Seg, offset uint16) (string, err
 	var buff strings.Builder
 	for {
 		// dx is offset
-		b, err := mu.MemRead(addr(seg, offset+count), 1)
+		b, err := mu.MemRead(cpu.Addr(seg, offset+count), 1)
 		if err != nil {
 			return "", err
 		}
@@ -130,7 +224,7 @@ func GetString(mu uc.Unicorn, seg cpu.Seg, offset uint16) (string, error) {
 	var buff strings.Builder
 	for {
 		// dx is offset
-		b, err := mu.MemRead(addr(seg, offset+count), 1)
+		b, err := mu.MemRead(cpu.Addr(seg, offset+count), 1)
 		if err != nil {
 			return "", err
 		}
@@ -166,6 +260,12 @@ func (d Dos) ClearDosError(ax uint64) error {
 	return nil
 }
 
+func (d Dos) SuccessDX(dx uint64) error {
+	cpu.SetCarryFlag(d.mu, false)
+	d.mu.RegWrite(uc.X86_REG_DX, dx)
+	return nil
+}
+
 func (d Dos) GetNextFreeHandle() (int, error) {
 	for handle := 3; handle < 200; handle++ {
 		if _, ok := d.files[handle]; !ok {
@@ -194,12 +294,21 @@ func dosFileModeToGo(ah uint8) (int, os.FileMode) {
 
 // https://stanislavs.org/helppc/int_21.html
 func (d *Dos) Int21(mu uc.Unicorn, intrNum uint32) error {
+
 	ah := cpu.Reg8(mu, uc.X86_REG_AH)
 	al := cpu.Reg8(mu, uc.X86_REG_AL)
 	bx := cpu.Reg16(mu, uc.X86_REG_BX)
 	cx := cpu.Reg16(mu, uc.X86_REG_CX)
 	dx := cpu.Reg16(mu, uc.X86_REG_DX)
+	cs := cpu.SReg16(mu, uc.X86_REG_CS)
 	ds := cpu.SReg16(mu, uc.X86_REG_DS)
+	es := cpu.SReg16(mu, uc.X86_REG_ES)
+	ss := cpu.SReg16(mu, uc.X86_REG_SS)
+	ip := cpu.SReg16(mu, uc.X86_REG_IP)
+	sp := cpu.SReg16(mu, uc.X86_REG_SP)
+
+	glog.V(1).Infof("Int21: CS: 0x%04X DS: 0x%04X ES: 0x%04X SS: 0x%04X IP: 0x%04X SP: 0x%04X\n",
+		cs, ds, es, ss, ip, sp)
 
 	switch ah {
 
@@ -215,20 +324,23 @@ func (d *Dos) Int21(mu uc.Unicorn, intrNum uint32) error {
 
 	case 0x02: // Display Output
 		d.out.WriteByte(byte(dx & 0xff))
+		d.out.Flush()
 	case 0x09: // Print $ terminated string.
 		if s, err := getStringDollarSign(mu, ds, dx); err == nil {
 			glog.V(1).Infof("getStringDollarSign: '%s'\n", s)
+			d.out.WriteString(s)
+			d.out.Flush()
 		}
 	case 0x0a: // Buffered Keyboard Input
 		reader := bufio.NewReader(d.in)
-		bmax, _ := mu.MemRead(addr(ds, dx), 1)
+		bmax, _ := mu.MemRead(cpu.Addr(ds, dx), 1)
 		max := int(bmax[0])
 		message, _ := reader.ReadString('\n')
 		if len(message) >= max {
 			message = message[:max-1]
 		}
-		mu.MemWrite(addr(ds, dx), []byte{bmax[0], byte(len(message))})
-		mu.MemWrite(addr(ds, dx)+2, []byte(message))
+		mu.MemWrite(cpu.Addr(ds, dx), []byte{bmax[0], byte(len(message))})
+		mu.MemWrite(cpu.Addr(ds, dx)+2, []byte(message))
 	case 0x30: // Get DOS Version Number
 		mu.RegWrite(uc.X86_REG_AX, 0x07)
 
@@ -271,7 +383,7 @@ func (d *Dos) Int21(mu uc.Unicorn, intrNum uint32) error {
 		flag, perm := dosFileModeToGo(al)
 		f, err := os.OpenFile(filename, flag, perm)
 		if err != nil {
-			return d.SetDosError(0x02, "open file failed")
+			return d.SetDosError(0x02, fmt.Sprintf("open file failed: '%s'", filename))
 		}
 		// Success
 		d.files[handle] = &DosFile{
@@ -302,7 +414,7 @@ func (d *Dos) Int21(mu uc.Unicorn, intrNum uint32) error {
 		if err != nil {
 			return d.SetDosError(0x1E, "Read fault")
 		}
-		mu.MemWrite(addr(ds, dx), bytes)
+		mu.MemWrite(cpu.Addr(ds, dx), bytes)
 		return d.ClearDosError(uint64(numRead))
 
 	case 0x40: // Write To File or Device Using Handle
@@ -319,7 +431,7 @@ func (d *Dos) Int21(mu uc.Unicorn, intrNum uint32) error {
 			}
 			return file.File.Truncate(pos)
 		}
-		mem, err := mu.MemRead(addr(ds, dx), uint64(cx))
+		mem, err := cpu.Mem(mu, ds, dx, uint64(cx))
 		if err != nil {
 			return d.SetDosError(0x1f, "General failure")
 		}
@@ -365,12 +477,34 @@ func (d *Dos) Int21(mu uc.Unicorn, intrNum uint32) error {
 		mu.RegWrite(uc.X86_REG_DX, uint64(pos)>>8)
 		return d.ClearDosError(uint64(pos))
 
+	case 0x44: // I/O Control for Devices (IOCTL)
+		/*
+			AL = function value
+			BX = file handle
+			BL = logical device number (0=default, 1=A:, 2=B:, 3=C:, ...)
+			CX = number of bytes to read or write
+		*/
+		if al == 0 {
+			switch bx {
+			case 0:
+				return d.SuccessDX(0x81)
+			case 1:
+				return d.SuccessDX(0x82)
+			case 2:
+				return d.SuccessDX(0x82)
+			default:
+				// C drive, nothing else.
+				return d.SuccessDX(0x02)
+			}
+		}
+		glog.Warningf("IOCTL AL:%02X, BX:%04X, BL:%02X, CX:%02X\n", al, bx, bx&0xff, cx)
+
 	case 0x4c: // Terminate process with return code
 		glog.V(1).Infoln("Int21: 0x0 Stop")
 		mu.Stop()
 
 	default:
-		glog.Errorf("Int21: Unhandled instrction: 0x%x; AH=0x%x\n", intrNum, ah)
+		glog.Errorf("Int21: Unhandled instrction: 0x%02X; AH=0x%02X\n", intrNum, ah)
 	}
 
 	return nil

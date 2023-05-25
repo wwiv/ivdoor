@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/hex"
 	"fmt"
 
 	"door86.org/ivdoor/cpu"
@@ -54,7 +55,12 @@ func addDefaultHooks(mu uc.Unicorn) error {
 			fmt.Println(err)
 			return
 		}
-		glog.V(1).Infof("1/ Code: 0x%x, 0x%x; Instruction: '%s'\n", addr, size, inst)
+		// 0E06:004E BE0010            MOV     SI,1000
+		cs := uint64(cpu.Reg16(mu, uc.X86_REG_CS) * 0x10)
+		offset := addr - cs
+		glog.V(1).Infof("[%04X:%04X] %-12s (size: %2d) Instruction: '%s'\n",
+			cs, offset, hex.EncodeToString(mem), size, inst)
+		glog.V(4).Infoln()
 
 	}, 1, 0)
 
@@ -63,10 +69,10 @@ func addDefaultHooks(mu uc.Unicorn) error {
 		if access == uc.MEM_WRITE {
 			atype = "write"
 		}
-		glog.V(1).Infof(": Mem %s @0x%x, 0x%x = 0x%x\n", atype, addr, size, value)
+		glog.V(1).Infof("Mem %s: @0x%x, 0x%x = 0x%x\n", atype, addr, size, value)
 	}, 1, 0)
 
-	invalid := uc.HOOK_MEM_READ_INVALID | uc.HOOK_MEM_WRITE_INVALID | uc.HOOK_MEM_FETCH_INVALID
+	invalid := uc.HOOK_MEM_READ_INVALID | uc.HOOK_MEM_WRITE_INVALID | uc.HOOK_MEM_FETCH_INVALID | uc.HOOK_MEM_UNMAPPED
 	mu.HookAdd(invalid, func(mu uc.Unicorn, access int, addr uint64, size int, value int64) bool {
 		atype := "unknown memory error"
 		switch access {
@@ -76,8 +82,10 @@ func addDefaultHooks(mu uc.Unicorn) error {
 			atype = "invalid read"
 		case uc.MEM_FETCH_UNMAPPED | uc.MEM_FETCH_PROT:
 			atype = "invalid fetch"
+		case uc.HOOK_MEM_UNMAPPED:
+			atype = "mem unmapped"
 		}
-		glog.V(1).Infof("%s: @0x%x, 0x%x = 0x%x\n", atype, addr, size, value)
+		glog.Errorf("%s: @0x%X, 0x%X = 0x%X\n", atype, addr, size, value)
 		return false
 	}, 1, 0)
 
@@ -85,8 +93,9 @@ func addDefaultHooks(mu uc.Unicorn) error {
 }
 
 func allocEmulatorMemory(em Emulator, mu uc.Unicorn) error {
-	// Map main memory region 0x07E0:0000 through 0xA000:0000
-	if err := mu.MemMap(IVDOOR_MEMORY_MAIN_START, IVDOOR_MEMORY_MAIN_SIZE); err != nil {
+	//IVDOOR_MEMORY_MAIN_START, IVDOOR_MEMORY_MAIN_SIZE
+	// Map 1M
+	if err := mu.MemMap(0, 0x100000); err != nil {
 		return err
 	}
 	// start emulation
@@ -148,6 +157,10 @@ func (em Emulator) WriteBinary(seg uint16, data []byte) error {
 }
 
 func (em Emulator) Start() error {
-	return em.mu.Start(IVDOOR_MEMORY_MAIN_START+0x100,
+	// Use CS:IP
+	cs := cpu.Reg16(em.mu, uc.X86_REG_CS)
+	ip := cpu.Reg16(em.mu, uc.X86_REG_IP)
+
+	return em.mu.Start(uint64(cs*0x10+ip),
 		uint64(IVDOOR_MEMORY_MAIN_START+IVDOOR_MEMORY_MAIN_SIZE))
 }

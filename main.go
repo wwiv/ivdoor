@@ -23,7 +23,7 @@ var (
 	cmdInst = flag.NewFlagSet("inst", flag.ExitOnError)
 )
 
-func run(b []byte) error {
+func run(exe *dos.Executable) error {
 	// set up unicorn instance and add hooks
 	mu, err := uc.NewUnicorn(uc.ARCH_X86, uc.MODE_16)
 	if err != nil {
@@ -42,7 +42,7 @@ func run(b []byte) error {
 	emu.Register(0x20, d.Int20)
 	emu.Register(0x21, d.Int21)
 
-	if err := dos.LoadCom(mu, emu.StartSegment(), b); err != nil {
+	if _, err := d.Load(exe); err != nil {
 		return err
 	}
 
@@ -105,12 +105,16 @@ func main() {
 			os.Exit(1)
 		}
 		file := cmdRun.Arg(0)
-		b, err := ReadFile(file)
+		exe, err := dos.ReadExeFromFile(file)
 		if err != nil {
 			fmt.Println(err)
 			return
 		}
-		run(b)
+		err = run(exe)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
 	case "inst":
 		cmdInst.Parse(args[1:])
 		if cmdInst.NArg() < 1 {
@@ -124,6 +128,19 @@ func main() {
 			fmt.Println(err)
 			return
 		}
-		run(b)
+		exe := &dos.Executable{
+			Etype:  dos.COM,
+			Exists: true,
+			Hdr:    dos.ExeHeader{},
+			Data:   b,
+		}
+		err = run(exe)
+		if err != nil {
+			fmt.Println(err)
+			return
+		}
+	default:
+		showHelp()
 	}
+
 }
