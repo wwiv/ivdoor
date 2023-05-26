@@ -2,6 +2,7 @@ package cpu
 
 import (
 	"encoding/binary"
+	"fmt"
 
 	"github.com/golang/glog"
 	uc "github.com/unicorn-engine/unicorn/bindings/go/unicorn"
@@ -9,6 +10,11 @@ import (
 
 type Seg uint16
 type Off uint16
+
+type SegOffset struct {
+	Seg Seg
+	Off uint16
+}
 
 func Reg(mu uc.Unicorn, reg int) uint64 {
 	res, err := mu.RegRead(reg)
@@ -99,4 +105,74 @@ func Mem(mu uc.Unicorn, seg Seg, off uint16, size uint64) ([]byte, error) {
 func Meml(mu uc.Unicorn, addr, size uint64) ([]byte, error) {
 	glog.V(2).Infof("Mem read at address: [%04X]", addr)
 	return mu.MemRead(addr, size)
+}
+
+func Push16(mu uc.Unicorn, val uint16) error {
+	ss := SReg16(mu, uc.X86_REG_SS)
+	sp := Reg16(mu, uc.X86_REG_SP)
+	if err := PutMem16(mu, Addr(ss, sp), val); err != nil {
+		return err
+	}
+	return mu.RegWrite(uc.X86_REG_SP, uint64(sp-2))
+}
+
+func Push8(mu uc.Unicorn, val uint8) error {
+	ss := SReg16(mu, uc.X86_REG_SS)
+	sp := Reg16(mu, uc.X86_REG_SP)
+	if err := PutMem8(mu, Addr(ss, sp), val); err != nil {
+		return err
+	}
+	return mu.RegWrite(uc.X86_REG_SP, uint64(sp-1))
+}
+
+func PushFlags(mu uc.Unicorn) error {
+	flags := Reg16(mu, uc.X86_REG_FLAGS)
+	return Push16(mu, flags)
+}
+
+func PopFlags(mu uc.Unicorn) (uint16, error) {
+	return Pop16(mu)
+}
+
+func Pop16(mu uc.Unicorn) (uint16, error) {
+	ss := SReg16(mu, uc.X86_REG_SS)
+	sp := Reg16(mu, uc.X86_REG_SP)
+	val, err := Mem16(mu, Addr(ss, sp))
+	if err != nil {
+		return 0, err
+	}
+	return val, mu.RegWrite(uc.X86_REG_SP, uint64(sp+2))
+}
+
+func Pop8(mu uc.Unicorn) (uint8, error) {
+	ss := SReg16(mu, uc.X86_REG_SS)
+	sp := Reg16(mu, uc.X86_REG_SP)
+	val, err := Mem8(mu, Addr(ss, sp))
+	if err != nil {
+		return 0, err
+	}
+	return val, mu.RegWrite(uc.X86_REG_SP, uint64(sp+1))
+}
+
+func Jump(mu uc.Unicorn, seg Seg, offset uint16) error {
+	if err := mu.RegWrite(uc.X86_REG_CS, uint64(seg)); err != nil {
+		// Should we panic() here?
+		return err
+	}
+	return mu.RegWrite(uc.X86_REG_IP, uint64(offset))
+}
+
+func MemSegOff(mu uc.Unicorn, seg Seg, off uint16) (SegOffset, error) {
+	ioff, err := Mem16(mu, Addr(seg, off))
+	if err != nil {
+		return SegOffset{}, fmt.Errorf("error reading interrupt segment: %s", err)
+	}
+	iseg, err := Mem16(mu, Addr(seg, off+2))
+	if err != nil {
+		return SegOffset{}, fmt.Errorf("error reading interrupt offset: %s", err)
+	}
+	return SegOffset{
+		Seg: Seg(iseg),
+		Off: ioff,
+	}, nil
 }

@@ -26,17 +26,19 @@ type Dos struct {
 	out *bufio.Writer
 
 	// DOS file handles
-	files map[int]*DosFile
-	Mem   *DosMem
+	files   map[int]*DosFile
+	intrvec map[int]cpu.SegOffset
+	Mem     *DosMem
 }
 
 func NewDos(mu uc.Unicorn, start, end cpu.Seg) *Dos {
 	d := &Dos{
-		mu:    mu,
-		in:    bufio.NewReader(os.Stdin),
-		out:   bufio.NewWriter(os.Stdout),
-		files: make(map[int]*DosFile),
-		Mem:   NewDosMem(int(start), int(end)),
+		mu:      mu,
+		in:      bufio.NewReader(os.Stdin),
+		out:     bufio.NewWriter(os.Stdout),
+		files:   make(map[int]*DosFile),
+		intrvec: make(map[int]cpu.SegOffset),
+		Mem:     NewDosMem(int(start), int(end)),
 	}
 	d.files[0] = &DosFile{Name: "", Dir: "", File: os.Stdin}
 	d.files[1] = &DosFile{Name: "", Dir: "", File: os.Stdout}
@@ -68,7 +70,7 @@ func CreatePsp(start_seg, end_seg, env_seg cpu.Seg, args []string) []byte {
 		c++
 		bs := []byte(string(arg))
 		for _, ch := range bs {
-			if c >= 0x7E {
+			if c >= 0x7D {
 				break
 			}
 			psp[81+c] = ch
@@ -360,8 +362,34 @@ func (d *Dos) Int21(mu uc.Unicorn, intrNum uint32) error {
 		}
 		mu.MemWrite(cpu.Addr(ds, dx), []byte{bmax[0], byte(len(message))})
 		mu.MemWrite(cpu.Addr(ds, dx)+2, []byte(message))
+
+	case 0x25: // Set Interrupt Vector
+		glog.Infof("Set vector: %02X = [%04X:%04X]\n", al, ds, dx)
+		if ds == 0 && dx == 0 {
+			// Remove the key
+			delete(d.intrvec, int(al))
+		} else {
+			d.intrvec[int(al)] = cpu.SegOffset{
+				Seg: ds,
+				Off: dx,
+			}
+		}
+		addr := uint64(al * 4)
+		cpu.PutMem16(mu, addr, dx)
+		cpu.PutMem16(mu, addr+2, uint16(ds))
+
 	case 0x30: // Get DOS Version Number
-		mu.RegWrite(uc.X86_REG_AX, 0x07)
+		mu.RegWrite(uc.X86_REG_AX, 0x05)
+
+	case 0x35: // Get Interrupt Vector
+		glog.Infof("Get vector: %02X\n", al)
+		if v, ok := d.intrvec[int(al)]; ok {
+			mu.RegWrite(uc.X86_REG_DS, uint64(v.Seg))
+			mu.RegWrite(uc.X86_REG_DX, uint64(v.Off))
+		} else {
+			mu.RegWrite(uc.X86_REG_DS, 0)
+			mu.RegWrite(uc.X86_REG_DX, 0)
+		}
 
 	case 0x3c: // Create File Using Handle
 		filename, err := GetString(mu, ds, dx)
