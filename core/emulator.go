@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"door86.org/ivdoor/cpu"
-	"door86.org/ivdoor/dos"
 	"github.com/golang/glog"
 	uc "github.com/unicorn-engine/unicorn/bindings/go/unicorn"
 	"golang.org/x/arch/x86/x86asm"
@@ -38,11 +37,29 @@ type Emulator struct {
 	Verbose int
 }
 
+func hook_insn_invalid(mu uc.Unicorn) bool {
+	cs := cpu.SReg16(mu, uc.X86_REG_CS)
+	ip := cpu.Reg16(mu, uc.X86_REG_IP)
+	addr := cpu.Addr(cs, ip)
+	mem, err := mu.MemRead(addr, 15)
+	if err != nil {
+		fmt.Println(err)
+		return false
+	}
+	inst, err := x86asm.Decode(mem, 16)
+	if err != nil {
+		fmt.Println(err)
+		return false
+	}
+
+	glog.Errorf("Invalid Instruction: '%-15s', '%s'", hex.EncodeToString(mem), inst)
+
+	return false
+}
+
 func addDefaultHooks(mu uc.Unicorn) error {
 
-	// mu.HookAdd(uc.HOOK_BLOCK, func(mu uc.Unicorn, addr uint64, size uint32) {
-	// 	glog.V(1).Infof("Block: 0x%x, 0x%x\n", addr, size)
-	// }, 1, 0)
+	mu.HookAdd(uc.HOOK_INSN_INVALID, hook_insn_invalid, 1, 0)
 
 	mu.HookAdd(uc.HOOK_CODE, func(mu uc.Unicorn, addr uint64, size uint32) {
 		mem, err := mu.MemRead(addr, uint64(size))
@@ -55,10 +72,15 @@ func addDefaultHooks(mu uc.Unicorn) error {
 			fmt.Println(err)
 			return
 		}
-		// 0E06:004E BE0010            MOV     SI,1000
-		cs := uint64(cpu.Reg16(mu, uc.X86_REG_CS) * 0x10)
-		offset := addr - cs
-		if glog.V(1) {
+		// do we need to fix IP?
+		csBase := uint64(cpu.Reg16(mu, uc.X86_REG_CS) * 0x10)
+		ip := cpu.Reg(mu, uc.X86_REG_EIP)
+		eip := cpu.Reg(mu, uc.X86_REG_EIP)
+		glog.V(3).Infof("IP: 0x%04X EIP: 0x%04X", ip, eip)
+		ip = addr - csBase
+		mu.RegWrite(uc.X86_REG_IP, ip)
+
+		if glog.V(2) {
 			ax := cpu.Reg8(mu, uc.X86_REG_AX)
 			bx := cpu.Reg16(mu, uc.X86_REG_BX)
 			cx := cpu.Reg16(mu, uc.X86_REG_CX)
@@ -67,18 +89,20 @@ func addDefaultHooks(mu uc.Unicorn) error {
 			ds := cpu.SReg16(mu, uc.X86_REG_DS)
 			es := cpu.SReg16(mu, uc.X86_REG_ES)
 			ss := cpu.SReg16(mu, uc.X86_REG_SS)
-			ip := cpu.SReg16(mu, uc.X86_REG_IP)
+			ip := cpu.Reg16(mu, uc.X86_REG_IP)
 			bp := cpu.SReg16(mu, uc.X86_REG_BP)
 			sp := cpu.SReg16(mu, uc.X86_REG_SP)
 
-			glog.V(1).Infof("Int21: CS: 0x%04X IP: 0x%04X DS: 0x%04X ES: 0x%04X SS: 0x%04X BP: 0x%04X SP: 0x%04X\n",
+			glog.V(2).Infof("Inst: CS: 0x%04X IP: 0x%04X DS: 0x%04X ES: 0x%04X SS: 0x%04X BP: 0x%04X SP: 0x%04X\n",
 				cs, ip, ds, es, ss, bp, sp)
-			glog.V(1).Infof("Int21: AX: 0x%04X BX: 0x%04X CX: 0x%04X DX: 0x%04X\n",
+			glog.V(2).Infof("Inst: AX: 0x%04X BX: 0x%04X CX: 0x%04X DX: 0x%04X\n",
 				ax, bx, cx, dx)
+			glog.V(2).Infof("[%04X:%04X] %-12s (size: %2d) Instruction: '%s'\n",
+				cs, ip, hex.EncodeToString(mem), size, inst)
+			next, _ := mu.MemRead(addr, 0x80)
+			glog.V(4).Infof("Next Memory: %s\n", hex.EncodeToString(next))
+			glog.V(4).Infoln()
 		}
-		glog.V(1).Infof("[%04X:%04X] %-12s (size: %2d) Instruction: '%s'\n",
-			cs, offset, hex.EncodeToString(mem), size, inst)
-		glog.V(4).Infoln()
 
 	}, 1, 0)
 
@@ -87,7 +111,7 @@ func addDefaultHooks(mu uc.Unicorn) error {
 		if access == uc.MEM_WRITE {
 			atype = "write"
 		}
-		glog.V(1).Infof("Mem %s: @0x%x, 0x%x = 0x%x\n", atype, addr, size, value)
+		glog.V(3).Infof("Mem %s: @0x%x, 0x%x = 0x%x\n", atype, addr, size, value)
 	}, 1, 0)
 
 	invalid := uc.HOOK_MEM_READ_INVALID | uc.HOOK_MEM_WRITE_INVALID | uc.HOOK_MEM_FETCH_INVALID | uc.HOOK_MEM_UNMAPPED
@@ -117,22 +141,21 @@ func allocEmulatorMemory(em Emulator, mu uc.Unicorn) error {
 		return err
 	}
 	// start emulation
-	mu.RegWriteBatch([]int{uc.X86_REG_DS, uc.X86_REG_CS}, []uint64{IVDOOR_MEMORY_MAIN_START / 0x10, IVDOOR_MEMORY_MAIN_START / 0x10})
 	return nil
 }
 
 func NewEmulator(mu uc.Unicorn) (*Emulator, error) {
 	e := Emulator{mu: mu, intrs: make(map[uint32]InterruptHandler), Verbose: 0}
 	addDefaultHooks(mu)
+	if err := allocEmulatorMemory(e, mu); err != nil {
+		return nil, err
+	}
 	mu.HookAdd(uc.HOOK_INTR, func(mu uc.Unicorn, intno uint32) {
 		ah, _ := mu.RegRead(uc.X86_REG_AH)
 		if err := e.Handle(mu, intno); err != nil {
 			glog.Warningf("Error executing Hook: 0x%x/%x: \nDetails: '%s'\n", intno, ah, err)
 		}
 	}, 1, 0)
-	if err := allocEmulatorMemory(e, mu); err != nil {
-		return nil, err
-	}
 	return &e, nil
 }
 
@@ -194,24 +217,11 @@ func (em Emulator) EndSegment() cpu.Seg {
 	return (IVDOOR_MEMORY_MAIN_START + IVDOOR_MEMORY_MAIN_SIZE) / 16
 }
 
-func (em Emulator) WriteBinary(seg uint16, data []byte) error {
-	start := cpu.Seg(IVDOOR_MEMORY_MAIN_START/16 + seg)
-	size := len(data)
-	if size < 0x10000 {
-		size = 0x10000
-	}
-	len := size >> 4
-	end := cpu.Seg(uint16(start) + uint16(len))
-	psp := dos.CreatePsp(start, end, end+1, []string{})
-	em.mu.MemWrite(uint64(IVDOOR_MEMORY_MAIN_START+seg), psp)
-	return em.mu.MemWrite(uint64(IVDOOR_MEMORY_MAIN_START+seg+0x100), data)
-}
-
 func (em Emulator) Start() error {
 	// Use CS:IP
-	cs := cpu.Reg16(em.mu, uc.X86_REG_CS)
+	cs := cpu.SReg16(em.mu, uc.X86_REG_CS)
 	ip := cpu.Reg16(em.mu, uc.X86_REG_IP)
 
-	return em.mu.Start(uint64(cs*0x10+ip),
-		uint64(IVDOOR_MEMORY_MAIN_START+IVDOOR_MEMORY_MAIN_SIZE))
+	start := cpu.Addr(cs, ip)
+	return em.mu.Start(uint64(start), 0xffffffff)
 }

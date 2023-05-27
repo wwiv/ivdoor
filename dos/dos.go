@@ -66,21 +66,20 @@ func CreatePsp(start_seg, end_seg, env_seg cpu.Seg, args []string) []byte {
 	// Fill in command line
 	c := 0
 	for _, arg := range args {
-		psp[81+c] = ' '
+		psp[0x81+c] = ' '
 		c++
 		bs := []byte(string(arg))
 		for _, ch := range bs {
 			if c >= 0x7D {
 				break
 			}
-			psp[81+c] = ch
+			psp[0x81+c] = ch
 			c++
 		}
 	}
 	// Add trailing 0Dh
 	psp[c] = 0x0d
-	c++
-	psp[80] = uint8(c & 0xff)
+	psp[0x80] = uint8(c & 0xff)
 
 	return psp
 }
@@ -148,9 +147,9 @@ func (dos *Dos) LoadExe(exe *Executable, seg_base *DosMemBlock, psp []byte) (seg
 	dos.mu.MemWrite(cpu.Addr(cpu.Seg(ds), 0), psp)
 	dos.mu.MemWrite(cpu.Addr(cpu.Seg(cs), 0), exe.Data)
 
-	glog.V(1).Infof("EXE Values:\nCS: 0x%04X\nDS: 0x%04X\nES: 0x%04X\nSS: 0x%04X\nIP: 0x%04X\n\n",
+	glog.V(1).Infof("EXE Values: CS: 0x%04X DS: 0x%04X ES: 0x%04X SS: 0x%04X IP: 0x%04X\n",
 		cs, ds, es, ss, exe.Hdr.IP)
-	glog.V(1).Infof("SP: 0x%04X\n", exe.Hdr.SP)
+	glog.V(1).Infof("SP: 0x%04X BP: 0x%04X Paragraphs: %d\n", exe.Hdr.SP, 0, exe.Hdr.HeaderParagraphs)
 
 	// Fixup relos
 	for _, r := range exe.Hdr.Relos {
@@ -164,7 +163,7 @@ func (dos *Dos) LoadExe(exe *Executable, seg_base *DosMemBlock, psp []byte) (seg
 			glog.Warningf("Error writing Relo: [0x%04X:0x%04X] += 0x%04X", r.Segment, r.Offset, img_start)
 			continue
 		}
-		glog.V(3).Infof("Relo: [0x%04X:0x%04X] += 0x%04X", r.Segment, r.Offset, img_start)
+		glog.Infof("Relo: [0x%04X:0x%04X] += 0x%04X", r.Segment, r.Offset, img_start)
 	}
 
 	return seg_start, nil
@@ -325,7 +324,7 @@ func (d *Dos) Int21(mu uc.Unicorn, intrNum uint32) error {
 	ds := cpu.SReg16(mu, uc.X86_REG_DS)
 	es := cpu.SReg16(mu, uc.X86_REG_ES)
 	ss := cpu.SReg16(mu, uc.X86_REG_SS)
-	ip := cpu.SReg16(mu, uc.X86_REG_IP)
+	ip := cpu.Reg16(mu, uc.X86_REG_IP)
 	sp := cpu.SReg16(mu, uc.X86_REG_SP)
 
 	glog.V(1).Infof("Int21: CS: 0x%04X DS: 0x%04X ES: 0x%04X SS: 0x%04X IP: 0x%04X SP: 0x%04X\n",
@@ -382,11 +381,12 @@ func (d *Dos) Int21(mu uc.Unicorn, intrNum uint32) error {
 		mu.RegWrite(uc.X86_REG_AX, 0x05)
 
 	case 0x35: // Get Interrupt Vector
-		glog.Infof("Get vector: %02X\n", al)
 		if v, ok := d.intrvec[int(al)]; ok {
+			glog.Infof("Get vector: %02X [%04X:%04X]\n", al, uint16(v.Seg), v.Off)
 			mu.RegWrite(uc.X86_REG_DS, uint64(v.Seg))
 			mu.RegWrite(uc.X86_REG_DX, uint64(v.Off))
 		} else {
+			glog.Infof("Get vector: %02X [UNUSED]\n", al)
 			mu.RegWrite(uc.X86_REG_DS, 0)
 			mu.RegWrite(uc.X86_REG_DX, 0)
 		}
@@ -427,11 +427,20 @@ func (d *Dos) Int21(mu uc.Unicorn, intrNum uint32) error {
 			return d.SetDosError(0x04, "unable to allocate file handle")
 		}
 
-		flag, perm := dosFileModeToGo(al)
-		f, err := os.OpenFile(filename, flag, perm)
+		var f *os.File
+		switch strings.ToLower(filename) {
+		case "con":
+			f = os.Stdout
+		case "nul":
+			f, err = os.Open(os.DevNull)
+		default:
+			flag, perm := dosFileModeToGo(al)
+			f, err = os.OpenFile(filename, flag, perm)
+		}
 		if err != nil {
 			return d.SetDosError(0x02, fmt.Sprintf("open file failed: '%s'", filename))
 		}
+
 		// Success
 		d.files[handle] = &DosFile{
 			Name: filename,
@@ -545,6 +554,16 @@ func (d *Dos) Int21(mu uc.Unicorn, intrNum uint32) error {
 			}
 		}
 		glog.Warningf("IOCTL AL:%02X, BX:%04X, BL:%02X, CX:%02X\n", al, bx, bx&0xff, cx)
+
+	case 0x4a: // Modify Allocated Memory Block (SETBLOCK)
+		glog.Infof("[BLOCK: 0x%04X, SIZE: %d paragraphs, %d bytes]", es, bx, bx*16)
+		newsize, err := d.Mem.Resize(int(es), int(bx))
+		// TODO - need to check max size if it's < bx and return that in BX on error.
+		if err != nil {
+			return d.SetDosError(0x02 /* wrong FIXME */, err.Error())
+		}
+		mu.RegWrite(uc.X86_REG_BX, uint64(newsize))
+		return d.ClearDosError(0)
 
 	case 0x4c: // Terminate process with return code
 		glog.V(1).Infoln("Int21: 0x0 Stop")

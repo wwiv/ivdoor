@@ -74,6 +74,12 @@ func (m *DosMem) Resize(start int, needed int) (int, error) {
 	if !found {
 		return 0, errors.New("not found")
 	}
+
+	// test
+	if m.Blocks[startBlock].Size() >= needed {
+		return needed, nil
+	}
+	// end test
 	lastBlock := startBlock
 	for i := startBlock + 1; i < len(m.Blocks); i++ {
 		if !m.Blocks[i].Avail {

@@ -53,7 +53,7 @@ type Executable struct {
 func (exe *Executable) SegmentsNeeded() int {
 	switch exe.Etype {
 	case EXE:
-		return int((exe.Hdr.BlocksInFile/32)+exe.Hdr.MinExtraParagraphs) + 1
+		return int((exe.Hdr.BlocksInFile*512/32)+exe.Hdr.MinExtraParagraphs) + 1
 	case COM, IMAGE:
 		return 0x1000 // 64K
 	default:

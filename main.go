@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 
+	"door86.org/ivdoor/bios"
 	"door86.org/ivdoor/core"
 	"door86.org/ivdoor/dos"
 	uc "github.com/unicorn-engine/unicorn/bindings/go/unicorn"
@@ -36,8 +37,11 @@ func run(exe *dos.Executable, args []string) error {
 		return err
 	}
 	emu.Verbose = 4
+	bios := bios.NewBios(mu, emu.StartSegment(), emu.EndSegment())
 	d := dos.NewDos(mu, emu.StartSegment(), emu.EndSegment())
 
+	// Add bios interrupts
+	emu.Register(0x1A, bios.Int1A)
 	// attach interrupts 0x20 and 0x21
 	emu.Register(0x20, d.Int20)
 	emu.Register(0x21, d.Int21)
